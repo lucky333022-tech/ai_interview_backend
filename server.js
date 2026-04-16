@@ -118,7 +118,17 @@ function tryParseControlPayload(data, isBinary) {
 
 wss.on("connection", (ws) => {
   const id = ++connectionId;
-  console.log(`🟢 Client ${id} connected`);
+  console.log(`🟢 Client ${id} connected (ws open)`);
+
+  /** @type {'INIT'|'SESSION_CREATED'|'UPLINK_READY'|'LIVE'|'ENDING'|'ENDED'} */
+  let transportState = "INIT";
+  function setTransportState(next, note = "") {
+    if (transportState === next) return;
+    console.log(
+      `[${id}] transportState: ${transportState} -> ${next}${note ? ` (${note})` : ""}`,
+    );
+    transportState = next;
+  }
 
   let isSpeaking = false;
   let sttStream = null;
@@ -224,6 +234,11 @@ wss.on("connection", (ws) => {
   /** When false, do not send TTS audio to the client (user ended interview or stopped mic). */
   let allowAudioOut = true;
   let finalizationInFlight = false;
+  let sttConnectPromise = null;
+  let reconnectSttTimer = null;
+  let earlyPcmDroppedCount = 0;
+  let firstPcmReceivedLogged = false;
+  let firstPcmForwardedLogged = false;
 
   function getTurnPrompt(userText) {
     const cfg = getCategoryConfig(interviewCategory);
@@ -236,6 +251,145 @@ wss.on("connection", (ws) => {
 
   function getInterviewSystemPrompt() {
     return buildInterviewerSystemPrompt(interviewCategory);
+  }
+
+  function sendAudioUplinkReady() {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    ws.send(
+      JSON.stringify({
+        type: "audio_uplink_ready",
+        session_id: sessionId,
+        sample_rate: 16000,
+        format: "pcm_s16le",
+        channels: 1,
+      }),
+    );
+    console.log(`[${id}] audio_uplink_ready sent (session=${sessionId})`);
+  }
+
+  function sendAudioUplinkPause(reason = "stt_not_ready") {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    ws.send(
+      JSON.stringify({
+        type: "audio_uplink_pause",
+        session_id: sessionId,
+        reason,
+      }),
+    );
+    console.log(`[${id}] audio_uplink_pause sent (reason=${reason})`);
+  }
+
+  function sendAudioUplinkResume(reason = "stt_reconnected") {
+    if (ws.readyState !== WebSocket.OPEN) return;
+    ws.send(
+      JSON.stringify({
+        type: "audio_uplink_resume",
+        session_id: sessionId,
+        reason,
+      }),
+    );
+    console.log(`[${id}] audio_uplink_resume sent (reason=${reason})`);
+  }
+
+  async function ensureSttClient() {
+    if (
+      sttStream &&
+      sttOpen &&
+      sttStream.readyState === WebSocket.OPEN &&
+      !sttConnectPromise
+    ) {
+      return sttStream;
+    }
+    if (sttConnectPromise) return sttConnectPromise;
+
+    sttConnectPromise = new Promise((resolve, reject) => {
+      try {
+        console.log(`[${id}] STT client create start`);
+
+        if (sttStream) {
+          try {
+            sttStream.safeClose?.();
+          } catch {
+            /* ignore */
+          }
+        }
+
+        sttOpen = false;
+        sttStream = createElevenLabsSttStream(onTranscript, (interimText) => {
+          const t = (interimText || "").trim();
+          if (t.length < 2) return;
+          lastUserSpeechAt = Date.now();
+          if (phase === "live" && ws.readyState === WebSocket.OPEN && t !== lastInterimTranscript) {
+            lastInterimTranscript = t;
+            ws.send(
+              JSON.stringify({
+                type: "transcript_partial",
+                speaker: "candidate",
+                text: t,
+                ts: Date.now(),
+              }),
+            );
+          }
+          if (userPendingUtterance) scheduleUserUtteranceFlush();
+          const playbackActive =
+            phase === "live" && Date.now() < assistantPlaybackUntil;
+          if (!playbackActive) return;
+          console.log(`🎤 [${id}] Barge-in (user speaking over assistant)`);
+          handleUserBargeIn();
+        });
+
+        const openTimeout = setTimeout(() => {
+          sttConnectPromise = null;
+          reject(new Error("STT open timeout"));
+        }, 10000);
+
+        sttStream.on("open", () => {
+          clearTimeout(openTimeout);
+          sttOpen = true;
+          console.log(`[${id}] STT client created/open`);
+          sttConnectPromise = null;
+          resolve(sttStream);
+        });
+
+        sttStream.on("close", (code, reasonBuf) => {
+          sttOpen = false;
+          sttStream = null;
+          const reason = Buffer.isBuffer(reasonBuf)
+            ? reasonBuf.toString("utf8")
+            : String(reasonBuf || "");
+          console.log(
+            `❌ ${STT_PROVIDER} closed (client ${id}) code=${code} reason=${reason || "n/a"}`,
+          );
+          if (transportState === "LIVE" || transportState === "UPLINK_READY") {
+            sendAudioUplinkPause("stt_closed");
+            setTransportState("SESSION_CREATED", "stt_closed");
+            clearTimeout(reconnectSttTimer);
+            reconnectSttTimer = setTimeout(async () => {
+              if (phase !== "live" || interviewFinalized) return;
+              try {
+                await ensureSttClient();
+                if (phase !== "live" || interviewFinalized) return;
+                setTransportState("UPLINK_READY", "stt_reconnected");
+                sendAudioUplinkReady();
+                sendAudioUplinkResume("stt_reconnected");
+                setTransportState("LIVE", "uplink_resumed");
+              } catch (err) {
+                console.error(`[${id}] STT reconnect failed:`, err.message);
+              }
+            }, 1000);
+          }
+        });
+
+        sttStream.on("error", (err) => {
+          console.error(`${STT_PROVIDER} error:`, err.message);
+        });
+      } catch (err) {
+        sttConnectPromise = null;
+        reject(err);
+      }
+    });
+
+    return sttConnectPromise;
   }
 
   function clearInterviewTimers() {
@@ -252,6 +406,7 @@ wss.on("connection", (ws) => {
 
   async function finalizeInterview(reason) {
     if (interviewFinalized || finalizationInFlight) return;
+    setTransportState("ENDING", `finalize_${reason}`);
     finalizationInFlight = true;
     interviewFinalized = true;
     clearInterviewTimers();
@@ -302,8 +457,12 @@ wss.on("connection", (ws) => {
             evaluation,
           })
         );
+        console.log(
+          `[${id}] result sent (session=${sessionId}, reason=${reason}, score=${evaluation?.score ?? "n/a"})`,
+        );
       }
     } finally {
+      setTransportState("ENDED", `finalized_${reason}`);
       finalizationInFlight = false;
     }
   }
@@ -414,6 +573,7 @@ wss.on("connection", (ws) => {
 
   async function handleControlMessage(obj) {
     if (obj.type === "start_interview") {
+      console.log(`[${id}] start_interview received`);
       const validated = validateStartPayload(obj);
       if (!validated.ok) {
         if (ws.readyState === WebSocket.OPEN) {
@@ -439,6 +599,7 @@ wss.on("connection", (ws) => {
       clearUserUtteranceDebounce();
       phase = "live";
       interviewStartedAt = Date.now();
+      setTransportState("INIT", "start_interview_reset");
       interviewCategory = input.category;
       sessionUserName = input.user_name;
       sessionPhoneNumber = input.phone_number;
@@ -454,6 +615,7 @@ wss.on("connection", (ws) => {
           used_at: new Date(interviewStartedAt).toISOString(),
         });
         sessionId = session?.sid || null;
+        setTransportState("SESSION_CREATED", "session_created");
       } catch (err) {
         console.error("create session error:", err.message);
         if (ws.readyState === WebSocket.OPEN) {
@@ -482,18 +644,48 @@ wss.on("connection", (ws) => {
             phone_number: sessionPhoneNumber,
           }),
         );
+        console.log(`[${id}] interview_started sent (session=${sessionId})`);
         ws.send(JSON.stringify({ type: "transcript_reset" }));
         ws.send(
           JSON.stringify({
             type: "session_update",
             session_id: sessionId,
-            status: "live",
+            status: "session_created",
           }),
         );
       }
       console.log(
         `▶ [${id}] Interview started, session=${sessionId}, category=${interviewCategory}, endsAt=${endsAt}`,
       );
+
+      try {
+        await ensureSttClient();
+        setTransportState("UPLINK_READY", "stt_open");
+        sendAudioUplinkReady();
+        setTransportState("LIVE", "uplink_ready");
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: "session_update",
+              session_id: sessionId,
+              status: "live",
+            }),
+          );
+        }
+      } catch (err) {
+        console.error(`[${id}] STT create failed:`, err.message);
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: "session_error",
+              error: `STT initialization failed: ${err.message}`,
+            }),
+          );
+        }
+        phase = "idle";
+        setTransportState("ENDED", "stt_init_failed");
+        return;
+      }
 
       await runAssistantTurn(getOpeningPrompt());
       return;
@@ -505,6 +697,7 @@ wss.on("connection", (ws) => {
       isSpeaking = false;
       assistantPlaybackUntil = 0;
       phase = "closing";
+      setTransportState("ENDING", "manual_end");
       clearInterviewTimers();
       console.log(`■ [${id}] Interview ended by user`);
       try {
@@ -634,60 +827,35 @@ wss.on("connection", (ws) => {
     console.log(`📦 [${id}] size:`, size);
 
     try {
-      if (!sttStream) {
-        console.log(`🚀 Creating ${STT_PROVIDER} STT stream...`);
-
-        sttStream = createElevenLabsSttStream(onTranscript, (interimText) => {
-          const t = (interimText || "").trim();
-          if (t.length < 2) return;
-          lastUserSpeechAt = Date.now();
-          if (phase === "live" && ws.readyState === WebSocket.OPEN && t !== lastInterimTranscript) {
-            lastInterimTranscript = t;
-            ws.send(
-              JSON.stringify({
-                type: "transcript_partial",
-                speaker: "candidate",
-                text: t,
-                ts: Date.now(),
-              }),
-            );
-          }
-          if (userPendingUtterance) scheduleUserUtteranceFlush();
-          // Only stop TTS when assistant audio is actually playing — not merely while
-          // the LLM is generating (avoids false barge-in when the user continues after a short STT split).
-          const playbackActive =
-            phase === "live" && Date.now() < assistantPlaybackUntil;
-          if (!playbackActive) return;
-          console.log(`🎤 [${id}] Barge-in (user speaking over assistant)`);
-          handleUserBargeIn();
-        });
-
-        sttStream.on("open", () => {
-          sttOpen = true;
-          console.log(`🧠 ${STT_PROVIDER} connected (client ${id})`);
-        });
-
-        sttStream.on("close", () => {
-          sttOpen = false;
-          sttStream = null;
-          console.log(`❌ ${STT_PROVIDER} closed (client ${id})`);
-        });
-
-        sttStream.on("error", (err) => {
-          console.error(`${STT_PROVIDER} error:`, err.message);
-        });
+      if (size < 1000) return;
+      if (!firstPcmReceivedLogged) {
+        firstPcmReceivedLogged = true;
+        console.log(`[${id}] first PCM received`);
       }
 
-      if (size < 1000) return;
-
       if (phase !== "live" || interviewDeadlinePassed()) return;
+      if (!(transportState === "UPLINK_READY" || transportState === "LIVE")) {
+        earlyPcmDroppedCount += 1;
+        console.log(
+          `[${id}] EARLY_PCM_DROPPED state=${transportState} count=${earlyPcmDroppedCount}`,
+        );
+        return;
+      }
 
-      if (sttOpen && sttStream.readyState === WebSocket.OPEN) {
-        if (typeof sttStream.sendAudio === "function") {
-          sttStream.sendAudio(message);
-        } else {
-          sttStream.send(message);
+      if (sttOpen && sttStream && sttStream.readyState === WebSocket.OPEN) {
+        sttStream.sendAudio?.(message);
+        if (!firstPcmForwardedLogged) {
+          firstPcmForwardedLogged = true;
+          console.log(`[${id}] first PCM forwarded`);
         }
+        if (transportState === "UPLINK_READY") {
+          setTransportState("LIVE", "first_pcm_forwarded");
+        }
+      } else {
+        earlyPcmDroppedCount += 1;
+        console.log(
+          `[${id}] EARLY_PCM_DROPPED state=${transportState} reason=stt_not_writable count=${earlyPcmDroppedCount}`,
+        );
       }
     } catch (err) {
       console.error("WS error:", err);
@@ -715,9 +883,15 @@ wss.on("connection", (ws) => {
     scheduleUserUtteranceFlush();
   }
 
-  ws.on("close", () => {
-    console.log(`🔴 Client ${id} disconnected`);
+  ws.on("close", (code, reasonBuf) => {
+    const reason = Buffer.isBuffer(reasonBuf)
+      ? reasonBuf.toString("utf8")
+      : String(reasonBuf || "");
+    console.log(
+      `🔴 Client ${id} disconnected (code=${code}, reason=${reason || "n/a"})`,
+    );
     clearInterviewTimers();
+    clearTimeout(reconnectSttTimer);
 
     if (!interviewFinalized && (phase === "live" || phase === "closing")) {
       finalizeInterview("disconnect").then(() => {
