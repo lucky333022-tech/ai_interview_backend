@@ -1,4 +1,5 @@
 // ===================== server.js (CALL CENTER INTERVIEW) =====================
+import http from "http";
 import WebSocket, { WebSocketServer } from "ws";
 import { createElevenLabsSttStream } from "./elevenlabsStt.js";
 import { streamLLM } from "./openai.js";
@@ -24,12 +25,28 @@ const STT_PROVIDER = "elevenlabs";
 console.log("🧠 LLM provider: openai");
 console.log("🎙️ STT provider: elevenlabs");
 
-const wss = new WebSocketServer({ port: 3000 });
+const PORT = Number(process.env.PORT || 3000);
+
+// Render health checks expect an HTTP responder. We still serve WebSockets
+// on the same port via the HTTP server upgrade mechanism.
+const httpServer = http.createServer((req, res) => {
+  if (req.url === "/health") {
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("ok");
+    return;
+  }
+  res.writeHead(404, { "Content-Type": "text/plain" });
+  res.end("not found");
+});
+
+const wss = new WebSocketServer({ server: httpServer });
 
 const INTERVIEW_MS = 10 * 60 * 1000;
 const WARNING_BEFORE_END_MS = 60 * 1000;
 
-console.log("🚀 Server running on ws://localhost:3000");
+httpServer.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
 
 let connectionId = 0;
 
