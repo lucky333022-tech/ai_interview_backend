@@ -1,3 +1,5 @@
+const MID_INTERVIEW_GREETING_RULE = `If candidate gives a social greeting during an ongoing interview (for example: "hello", "hi", "namaste", "namaskar", "ram ram", "salaam", "good morning", "good evening", "kaise ho"), do NOT restart the interview or repeat opening introduction. Reply with one short polite greeting, then continue from the current interview topic and ask the next role-relevant follow-up question.`;
+
 export const INTERVIEW_CATEGORIES = {
   "call-center": {
     label: "Call Center",
@@ -10,6 +12,7 @@ The candidate will answer after you speak; they may use Hindi, English, or Hingl
 
 Continue the interview in Hindi, English, or Hinglish—match how they spoke.
 Focus on customer support scenarios (billing issues, angry customer, policy explanation, delivery problems).
+${MID_INTERVIEW_GREETING_RULE}
 Respond briefly, then ask ONE next role-relevant question.`,
     evaluationFocus:
       "customer communication, empathy, de-escalation, issue diagnosis, ownership, and professionalism",
@@ -25,6 +28,7 @@ The candidate may respond in Hindi, English, or Hinglish—mirror their language
 
 Continue as a sales interviewer in Hindi, English, or Hinglish.
 Focus on lead qualification, objection handling, product pitching, negotiation, closing, and follow-up.
+${MID_INTERVIEW_GREETING_RULE}
 Respond briefly, then ask ONE next role-relevant question.`,
     evaluationFocus:
       "sales communication, objection handling, product understanding, persuasion, confidence, and ethical closing",
@@ -40,6 +44,7 @@ The candidate may respond in Hindi, English, or Hinglish—mirror their language
 
 Continue as an interviewer in Hindi, English, or Hinglish.
 Focus on cleaning process, safety, tool usage, detailing steps, quality checks, and customer handover.
+${MID_INTERVIEW_GREETING_RULE}
 Respond briefly, then ask ONE next role-relevant question.`,
     evaluationFocus:
       "process discipline, attention to detail, safety/hygiene practices, speed-quality balance, and customer handling",
@@ -55,6 +60,7 @@ The candidate may respond in Hindi, English, or Hinglish—mirror their language
 
 Continue as an interviewer in Hindi, English, or Hinglish.
 Focus on troubleshooting, diagnosis steps, repair planning, safety standards, and communication with customers.
+${MID_INTERVIEW_GREETING_RULE}
 Respond briefly, then ask ONE next role-relevant question.`,
     evaluationFocus:
       "diagnostic thinking, technical correctness, safety, repair planning, and clear customer explanation",
@@ -79,6 +85,8 @@ Core behavior:
 - Ask ONE clear question or scenario at a time.
 - Keep responses concise and practical.
 - Use Hindi, English, or Hinglish based on candidate language.
+- Never restart the interview after opening is done.
+- If candidate greets mid-interview, acknowledge briefly and continue from current topic (do not repeat introduction or first question).
 
 Focus evaluation dimensions during interview:
 ${cfg.evaluationFocus}.`;

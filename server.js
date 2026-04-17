@@ -44,6 +44,16 @@ const wss = new WebSocketServer({ server: httpServer });
 const INTERVIEW_MS = 10 * 60 * 1000;
 const WARNING_BEFORE_END_MS = 60 * 1000;
 
+/** ElevenLabs closes the realtime STT socket with these reasons when retrying will not help. */
+function isElevenLabsSttFatalCloseReason(reason) {
+  const r = String(reason || "").toLowerCase();
+  return (
+    r.includes("insufficient_funds") ||
+    r.includes("quota_exceeded") ||
+    r.includes("invalid_api_key")
+  );
+}
+
 httpServer.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
 });
@@ -239,6 +249,7 @@ wss.on("connection", (ws) => {
   let earlyPcmDroppedCount = 0;
   let firstPcmReceivedLogged = false;
   let firstPcmForwardedLogged = false;
+  let interviewStartNotified = false;
 
   function getTurnPrompt(userText) {
     const cfg = getCategoryConfig(interviewCategory);
@@ -305,6 +316,7 @@ wss.on("connection", (ws) => {
     sttConnectPromise = new Promise((resolve, reject) => {
       try {
         console.log(`[${id}] STT client create start`);
+        let sttReadyResolved = false;
 
         if (sttStream) {
           try {
@@ -338,6 +350,8 @@ wss.on("connection", (ws) => {
           handleUserBargeIn();
         });
 
+        const streamRef = sttStream;
+
         const openTimeout = setTimeout(() => {
           sttConnectPromise = null;
           reject(new Error("STT open timeout"));
@@ -347,8 +361,27 @@ wss.on("connection", (ws) => {
           clearTimeout(openTimeout);
           sttOpen = true;
           console.log(`[${id}] STT client created/open`);
-          sttConnectPromise = null;
-          resolve(sttStream);
+          const sessionStartedTimeout = setTimeout(() => {
+            sttConnectPromise = null;
+            reject(new Error("STT session_started timeout"));
+          }, 10000);
+
+          const onSessionMessage = (msg) => {
+            try {
+              const data = JSON.parse(msg.toString());
+              const typ = data?.type || data?.message_type;
+              if (typ !== "session_started") return;
+              sttReadyResolved = true;
+              clearTimeout(sessionStartedTimeout);
+              streamRef.off("message", onSessionMessage);
+              sttConnectPromise = null;
+              resolve(streamRef);
+            } catch {
+              /* ignore parse failures while waiting for session_started */
+            }
+          };
+
+          streamRef.on("message", onSessionMessage);
         });
 
         sttStream.on("close", (code, reasonBuf) => {
@@ -360,6 +393,43 @@ wss.on("connection", (ws) => {
           console.log(
             `❌ ${STT_PROVIDER} closed (client ${id}) code=${code} reason=${reason || "n/a"}`,
           );
+          if (!sttReadyResolved && sttConnectPromise) {
+            sttConnectPromise = null;
+            reject(
+              new Error(
+                reason
+                  ? `STT connection closed before ready: ${reason}`
+                  : `STT connection closed before ready (code ${code})`,
+              ),
+            );
+          }
+          if (
+            STT_PROVIDER === "elevenlabs" &&
+            isElevenLabsSttFatalCloseReason(reason)
+          ) {
+            clearTimeout(reconnectSttTimer);
+            reconnectSttTimer = null;
+            console.error(
+              `[${id}] STT will not reconnect (fatal close from ElevenLabs). Check credits/API key at https://elevenlabs.io`,
+            );
+            sendAudioUplinkPause("stt_fatal_close");
+            clearInterviewTimers();
+            phase = "idle";
+            setTransportState("ENDED", "stt_fatal_close");
+            if (interviewStartNotified && ws.readyState === WebSocket.OPEN) {
+              ws.send(
+                JSON.stringify({
+                  type: "session_error",
+                  code: "STT_PROVIDER_BILLING",
+                  service: "stt",
+                  recoverable: false,
+                  error:
+                    "Speech recognition stopped: ElevenLabs reported insufficient credits or a billing/API issue. Add credits or verify ELEVENLABS_API_KEY in the ElevenLabs dashboard.",
+                }),
+              );
+            }
+            return;
+          }
           if (transportState === "LIVE" || transportState === "UPLINK_READY") {
             sendAudioUplinkPause("stt_closed");
             setTransportState("SESSION_CREATED", "stt_closed");
@@ -593,6 +663,7 @@ wss.on("connection", (ws) => {
       transcriptHistory = [];
       lastTranscript = "";
       lastCallTime = 0;
+      interviewStartNotified = false;
       userPendingUtterance = "";
       lastUserSpeechAt = 0;
       lastInterimTranscript = "";
@@ -630,40 +701,35 @@ wss.on("connection", (ws) => {
         return;
       }
 
-      armInterviewTimers();
-
-      const endsAt = interviewStartedAt + INTERVIEW_MS;
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(
-          JSON.stringify({
-            type: "interview_started",
-            endsAt,
-            session_id: sessionId,
-            category: interviewCategory,
-            user_name: sessionUserName,
-            phone_number: sessionPhoneNumber,
-          }),
-        );
-        console.log(`[${id}] interview_started sent (session=${sessionId})`);
-        ws.send(JSON.stringify({ type: "transcript_reset" }));
-        ws.send(
-          JSON.stringify({
-            type: "session_update",
-            session_id: sessionId,
-            status: "session_created",
-          }),
-        );
-      }
-      console.log(
-        `▶ [${id}] Interview started, session=${sessionId}, category=${interviewCategory}, endsAt=${endsAt}`,
-      );
-
       try {
         await ensureSttClient();
         setTransportState("UPLINK_READY", "stt_open");
         sendAudioUplinkReady();
         setTransportState("LIVE", "uplink_ready");
+        armInterviewTimers();
+        const endsAt = interviewStartedAt + INTERVIEW_MS;
         if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: "transcript_reset" }));
+          ws.send(
+            JSON.stringify({
+              type: "session_update",
+              session_id: sessionId,
+              status: "session_created",
+            }),
+          );
+          ws.send(
+            JSON.stringify({
+              type: "interview_started",
+              endsAt,
+              session_id: sessionId,
+              category: interviewCategory,
+              user_name: sessionUserName,
+              phone_number: sessionPhoneNumber,
+              stt_ready: true,
+            }),
+          );
+          interviewStartNotified = true;
+          console.log(`[${id}] interview_started sent (session=${sessionId})`);
           ws.send(
             JSON.stringify({
               type: "session_update",
@@ -672,12 +738,18 @@ wss.on("connection", (ws) => {
             }),
           );
         }
+        console.log(
+          `▶ [${id}] Interview started, session=${sessionId}, category=${interviewCategory}, endsAt=${endsAt}`,
+        );
       } catch (err) {
         console.error(`[${id}] STT create failed:`, err.message);
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(
             JSON.stringify({
               type: "session_error",
+              code: "STT_INIT_FAILED",
+              service: "stt",
+              recoverable: false,
               error: `STT initialization failed: ${err.message}`,
             }),
           );
