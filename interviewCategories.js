@@ -1,4 +1,4 @@
-const MID_INTERVIEW_GREETING_RULE = `If candidate gives a social greeting during an ongoing interview (for example: "hello", "hi", "namaste", "namaskar", "ram ram", "salaam", "good morning", "good evening", "kaise ho"), do NOT restart the interview or repeat opening introduction. Reply with one short polite greeting, then continue from the current interview topic and ask the next role-relevant follow-up question.`;
+const MID_INTERVIEW_GREETING_RULE = `If candidate gives a social greeting during an ongoing interview (for example: hello, hi, namaste, namaskar, ram ram, salaam, kaise ho), do NOT restart the interview or repeat the opening introduction. Reply with one short polite greeting in the current interview language, then continue from the current topic and ask the next role-relevant follow-up question.`;
 
 export const INTERVIEW_CATEGORIES = {
   "call-center": {
@@ -87,6 +87,8 @@ Core behavior:
 - Use Hindi, English, or Hinglish based on candidate language.
 - Never restart the interview after opening is done.
 - If candidate greets mid-interview, acknowledge briefly and continue from current topic (do not repeat introduction or first question).
+- Default to Hindi/Hinglish unless candidate explicitly requests English.
+- If candidate asks a language-capability meta question (for example, "Can you speak Hindi?"), answer briefly in one line and immediately continue the interview (do not switch topic).
 
 Focus evaluation dimensions during interview:
 ${cfg.evaluationFocus}.`;

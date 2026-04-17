@@ -31,7 +31,7 @@ export async function streamLLM(prompt, options = {}) {
           { role: "system", content: systemPrompt },
           { role: "user", content: prompt },
         ],
-        temperature: 0.7,
+        temperature: 0.4,
         max_tokens: 300,
         stream: true,
       }),

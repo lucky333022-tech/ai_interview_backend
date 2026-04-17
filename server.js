@@ -250,10 +250,126 @@ wss.on("connection", (ws) => {
   let firstPcmReceivedLogged = false;
   let firstPcmForwardedLogged = false;
   let interviewStartNotified = false;
+  /** @type {'hindi_or_hinglish' | 'english'} */
+  let preferredLanguageMode = "hindi_or_hinglish";
+
+  function normalizeForIntent(text) {
+    return String(text || "")
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}\s]/gu, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function isGreetingOnlyUtterance(text) {
+    const normalized = normalizeForIntent(text);
+    if (!normalized) return false;
+    const greetingWords = new Set([
+      "hi",
+      "hello",
+      "hey",
+      "namaste",
+      "namaskar",
+      "salaam",
+      "salam",
+      "ram ram",
+      "good morning",
+      "good evening",
+      "good afternoon",
+      "kaise ho",
+      "kese ho",
+      "kaisi ho",
+      "kaisa hai",
+      "kaisi hain",
+      "aur batao",
+      "aur sunao",
+    ]);
+    if (greetingWords.has(normalized)) return true;
+    return /^((hi|hello|hey|namaste|namaskar|salaam|salam)\s*)+$/.test(
+      normalized,
+    );
+  }
+
+  function isExplicitEnglishSwitchRequest(text) {
+    const normalized = normalizeForIntent(text);
+    if (!normalized) return false;
+    const englishPatterns = [
+      /\b(speak|talk|continue|reply|answer|ask)\b.*\benglish\b/,
+      /\benglish\b.*\b(speak|talk|continue|reply|answer|ask)\b/,
+      /\b(can|could|please)\b.*\benglish\b/,
+      /\benglish\s+mein\b/,
+      /\benglish\s+me\b/,
+      /\bangrezi\s+mein\b/,
+      /\bangrezi\s+me\b/,
+      /\benglish\s+me\s+bolo\b/,
+      /\benglish\s+mein\s+bolo\b/,
+      /\bin english please\b/,
+      /\bcan you speak english\b/,
+    ];
+    return englishPatterns.some((rx) => rx.test(normalized));
+  }
+
+  function isExplicitHindiSwitchRequest(text) {
+    const normalized = normalizeForIntent(text);
+    if (!normalized) return false;
+    const hindiPatterns = [
+      /\b(hindi|hinglish)\b.*\b(speak|talk|continue|reply|answer|ask|bolo)\b/,
+      /\b(speak|talk|continue|reply|answer|ask|bolo)\b.*\b(hindi|hinglish)\b/,
+      /\bhindi\s+mein\b/,
+      /\bhindi\s+me\b/,
+      /\bhinglish\s+mein\b/,
+      /\bhinglish\s+me\b/,
+      /\bhindi\s+me\s+bolo\b/,
+      /\bhindi\s+mein\s+bolo\b/,
+      /\bhindi me baat\b/,
+      /\bhindi mein baat\b/,
+    ];
+    return hindiPatterns.some((rx) => rx.test(normalized));
+  }
+
+  function updateLanguagePreferenceFromUser(userText) {
+    if (isGreetingOnlyUtterance(userText)) return;
+    if (isExplicitEnglishSwitchRequest(userText)) {
+      preferredLanguageMode = "english";
+      console.log(`[${id}] language_mode -> english`);
+      return;
+    }
+    if (isExplicitHindiSwitchRequest(userText)) {
+      preferredLanguageMode = "hindi_or_hinglish";
+      console.log(`[${id}] language_mode -> hindi_or_hinglish`);
+    }
+  }
+
+  function getRecentTranscriptContext(maxLines = 6) {
+    const recent = transcriptHistory.slice(-maxLines);
+    if (!recent.length) return "No prior transcript yet.";
+    return recent
+      .map((entry) => {
+        const speaker = entry.role === "assistant" ? "Interviewer" : "Candidate";
+        return `${speaker}: ${entry.text}`;
+      })
+      .join("\n");
+  }
 
   function getTurnPrompt(userText) {
     const cfg = getCategoryConfig(interviewCategory);
-    return cfg.turnPromptBuilder(userText);
+    const languageModeInstruction =
+      preferredLanguageMode === "english"
+        ? "Candidate explicitly requested English. Continue in English unless candidate asks to switch back."
+        : "Default language mode is Hindi/Hinglish. Continue in Hindi/Hinglish unless candidate explicitly requests English.";
+    const greetingHandlingInstruction = isGreetingOnlyUtterance(userText)
+      ? "Current user utterance is a social greeting. Reply with one brief polite greeting, then continue the ongoing interview topic with the next role-relevant question."
+      : "Do not reset interview context. Continue from the ongoing topic.";
+    return `${cfg.turnPromptBuilder(userText)}
+
+Session constraints:
+- Active interview category: ${cfg.label}.
+- ${languageModeInstruction}
+- ${greetingHandlingInstruction}
+- If candidate asks about language preference (for example "can you speak Hindi?"), acknowledge in one short line and immediately continue interview questions in the requested language.
+
+Recent transcript (most recent first context at bottom):
+${getRecentTranscriptContext()}`;
   }
 
   function getOpeningPrompt() {
@@ -261,7 +377,16 @@ wss.on("connection", (ws) => {
   }
 
   function getInterviewSystemPrompt() {
-    return buildInterviewerSystemPrompt(interviewCategory);
+    const languageModeInstruction =
+      preferredLanguageMode === "english"
+        ? "Candidate requested English. Use English for interviewer replies unless candidate asks for Hindi/Hinglish."
+        : "Use Hindi/Hinglish by default. Switch to English only when candidate explicitly requests English.";
+    return `${buildInterviewerSystemPrompt(interviewCategory)}
+
+Session-level language policy:
+- ${languageModeInstruction}
+- Never drift to English unless candidate explicitly asks for it.
+- During mid-interview greetings, do one short greeting and continue current question flow.`;
   }
 
   function sendAudioUplinkReady() {
@@ -574,6 +699,7 @@ wss.on("connection", (ws) => {
     lastTranscript = merged;
     lastCallTime = Date.now();
 
+    updateLanguagePreferenceFromUser(merged);
     transcriptHistory.push({ role: "user", text: merged, at: lastCallTime });
     console.log(`🗣 [${id}] User:`, merged);
     lastInterimTranscript = "";
@@ -664,6 +790,7 @@ wss.on("connection", (ws) => {
       lastTranscript = "";
       lastCallTime = 0;
       interviewStartNotified = false;
+      preferredLanguageMode = "hindi_or_hinglish";
       userPendingUtterance = "";
       lastUserSpeechAt = 0;
       lastInterimTranscript = "";
