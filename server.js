@@ -8,7 +8,7 @@ import { evaluateInterview } from "./evaluateInterview.js";
 import {
   DEFAULT_INTERVIEW_CATEGORY,
   INTERVIEW_CATEGORIES,
-  buildInterviewerSystemPrompt,
+  buildPriyaSystemPrompt,
   getCategoryConfig,
 } from "./interviewCategories.js";
 import {
@@ -64,6 +64,7 @@ function validateStartPayload(obj) {
   const category = String(obj?.category || "").trim().toLowerCase();
   const userName = String(obj?.user_name || "").trim();
   const phoneNumber = String(obj?.phone_number || "").trim();
+  const jobDescription = String(obj?.job_description ?? "").trim();
 
   if (!category || !(category in INTERVIEW_CATEGORIES)) {
     return {
@@ -84,6 +85,7 @@ function validateStartPayload(obj) {
       category,
       user_name: userName,
       phone_number: phoneNumber,
+      job_description: jobDescription,
     },
   };
 }
@@ -147,6 +149,8 @@ wss.on("connection", (ws) => {
   let interviewCategory = DEFAULT_INTERVIEW_CATEGORY;
   let sessionUserName = "";
   let sessionPhoneNumber = "";
+  /** Optional job description for Priya system prompt (primary focus when set). */
+  let sessionJobDescription = "";
 
   let lastTranscript = "";
   let lastCallTime = 0;
@@ -351,42 +355,108 @@ wss.on("connection", (ws) => {
       .join("\n");
   }
 
+  function getPriyaLanguageLine() {
+    if (preferredLanguageMode === "english") {
+      return "English. The candidate requested English; conduct your replies in English unless they ask for Hindi/Hinglish.";
+    }
+    return "Hindi and Hinglish. Default to natural Hindi; use Hinglish when appropriate. Use English only if the candidate explicitly asks.";
+  }
+
+  function getInterviewSystemPrompt() {
+    const cfg = getCategoryConfig(interviewCategory);
+    const sessionPolicy =
+      preferredLanguageMode === "english"
+        ? "Session language: English unless the candidate asks to switch back to Hindi/Hinglish."
+        : "Session language: Hindi/Hinglish by default. Do not drift to English unless the candidate explicitly asks.";
+    return `${buildPriyaSystemPrompt({
+      name: sessionUserName || "Candidate",
+      userId: sessionId ? String(sessionId) : "pending",
+      knowledgeContext: cfg.knowledgeContext,
+      language: getPriyaLanguageLine(),
+      categoryLabel: cfg.label,
+      jobDescription: sessionJobDescription,
+    })}
+
+Session-level policy (in addition to rules above):
+- ${sessionPolicy}
+- Greetings: do not open replies with Namaste/Hello/name unless their last message was greeting-only; see "Greeting and name usage" in the system prompt.
+- If the candidate asks about language preference, acknowledge in one short line and continue in that language.`;
+  }
+
   function getTurnPrompt(userText) {
     const cfg = getCategoryConfig(interviewCategory);
     const languageModeInstruction =
       preferredLanguageMode === "english"
-        ? "Candidate explicitly requested English. Continue in English unless candidate asks to switch back."
-        : "Default language mode is Hindi/Hinglish. Continue in Hindi/Hinglish unless candidate explicitly requests English.";
-    const greetingHandlingInstruction = isGreetingOnlyUtterance(userText)
-      ? "Current user utterance is a social greeting. Reply with one brief polite greeting, then continue the ongoing interview topic with the next role-relevant question."
-      : "Do not reset interview context. Continue from the ongoing topic.";
+        ? "Candidate explicitly requested English. Continue in English unless they ask to switch back."
+        : "Default: Hindi/Hinglish. Continue in Hindi/Hinglish unless they explicitly request English.";
+    const greetingOnly = isGreetingOnlyUtterance(userText);
+    const greetingHandlingInstruction = greetingOnly
+      ? `Their message is greeting-only. CRITICAL: Mirror in 2–5 words only (same style as them). Do NOT say "${sessionUserName}" or "Namaste ${sessionUserName}". Do NOT re-introduce yourself as Priya. Do NOT repeat your previous question verbatim—ask a NEW follow-up on the same topic.`
+      : `CRITICAL: Their message is substantive. Do NOT start with Namaste, Hello, Good morning, or with the candidate's name. Start directly with feedback on their answer and/or your next question. Continue the ongoing topic; do not restart the interview.`;
     return `${cfg.turnPromptBuilder(userText)}
 
 Session constraints:
-- Active interview category: ${cfg.label}.
+- Role: ${cfg.label}.
 - ${languageModeInstruction}
 - ${greetingHandlingInstruction}
-- If candidate asks about language preference (for example "can you speak Hindi?"), acknowledge in one short line and immediately continue interview questions in the requested language.
 
-Recent transcript (most recent first context at bottom):
+Recent transcript (most recent context at bottom):
 ${getRecentTranscriptContext()}`;
   }
 
-  function getOpeningPrompt() {
-    return getCategoryConfig(interviewCategory).openingPrompt;
+  function getFirstQuestionPrompt() {
+    const cfg = getCategoryConfig(interviewCategory);
+    const lang =
+      preferredLanguageMode === "english"
+        ? "Use English for this reply (candidate has not spoken yet; opening was in Hindi)."
+        : "Use Hindi or Hinglish for this reply to match the default interview language.";
+    return `Internal instruction: The fixed Hindi welcome was already spoken. The candidate has not answered yet.
+
+Ask exactly ONE clear first interview question for the ${cfg.label} role. ${lang}
+Do not repeat the welcome, your name, or the module line. Do not start with Namaste or the candidate's name—the opening already greeted them. Keep it short.`;
   }
 
-  function getInterviewSystemPrompt() {
-    const languageModeInstruction =
-      preferredLanguageMode === "english"
-        ? "Candidate requested English. Use English for interviewer replies unless candidate asks for Hindi/Hinglish."
-        : "Use Hindi/Hinglish by default. Switch to English only when candidate explicitly requests English.";
-    return `${buildInterviewerSystemPrompt(interviewCategory)}
+  function buildFixedOpeningHindiText() {
+    const cfg = getCategoryConfig(interviewCategory);
+    const mod = String(cfg.moduleLabel || "training module").trim();
+    return `Namaste ${sessionUserName}! Main Priya hoon, aapki AI interviewer. Aaj hum ${mod} pe kuch sawaal karenge. Toh chalo shuru karte hain.`;
+  }
 
-Session-level language policy:
-- ${languageModeInstruction}
-- Never drift to English unless candidate explicitly asks for it.
-- During mid-interview greetings, do one short greeting and continue current question flow.`;
+  /**
+   * Non-LLM assistant line: fixed script + TTS + transcript (used for Hindi opening).
+   */
+  async function playAssistantUtterance(scriptText) {
+    if (phase === "done") return;
+    const trimmed = String(scriptText || "").trim();
+    if (!trimmed) return;
+    isSpeaking = true;
+    try {
+      const audioBuffer = await streamTTS(trimmed);
+      if (allowAudioOut && ws.readyState === WebSocket.OPEN) {
+        sendAssistantAudio(audioBuffer);
+      }
+      const t = Date.now();
+      transcriptHistory.push({ role: "assistant", text: trimmed, at: t });
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(
+          JSON.stringify({
+            type: "transcript_final",
+            speaker: "assistant",
+            text: trimmed,
+            ts: t,
+          }),
+        );
+      }
+    } catch (err) {
+      console.error("TTS (fixed script) error:", err.message);
+    } finally {
+      isSpeaking = false;
+    }
+  }
+
+  async function deliverFixedOpeningAndFirstQuestion() {
+    await playAssistantUtterance(buildFixedOpeningHindiText());
+    await runAssistantTurn(getFirstQuestionPrompt());
   }
 
   function sendAudioUplinkReady() {
@@ -736,7 +806,7 @@ Session-level language policy:
     await waitForLlmIdle();
     try {
       const closingText =
-        "Your interview time is up. Thank you for participating.";
+        "Samay samapt ho gaya. Aapka interview yahi samapt hota hai. Dhanyavaad.";
       const audioBuffer = await streamTTS(closingText);
       if (allowAudioOut && ws.readyState === WebSocket.OPEN) {
         isSpeaking = true;
@@ -801,6 +871,7 @@ Session-level language policy:
       interviewCategory = input.category;
       sessionUserName = input.user_name;
       sessionPhoneNumber = input.phone_number;
+      sessionJobDescription = input.job_description || "";
 
       try {
         const session = await createInterviewSession({
@@ -886,7 +957,7 @@ Session-level language policy:
         return;
       }
 
-      await runAssistantTurn(getOpeningPrompt());
+      await deliverFixedOpeningAndFirstQuestion();
       return;
     }
 

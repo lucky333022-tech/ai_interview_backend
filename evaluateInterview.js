@@ -1,30 +1,25 @@
 import { getCategoryConfig } from "./interviewCategories.js";
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 
-const CORE_EVAL_SYSTEM = `You are an expert hiring assessor. You evaluate a role-specific practice interview transcript.
+const CORE_EVAL_SYSTEM = `You are evaluating a voice interview transcript for a training module assessment.
 
-Score fairly using this rubric (each 0-25, sum = total out of 100):
-- communication_clarity: Clear speech, structure, appropriate language
-- empathy_tone: Warmth, patience, listening cues, de-escalation
-- problem_handling: Understanding issue, steps offered, ownership
-- professionalism: Politeness, boundaries, brand-safe language
+## Scoring guidelines
+- Score each distinct question the Assistant asked. Per-question points (0-10):
+  - Great answer: 10 points
+  - Good answer: 7-8 points
+  - Okay answer: 4-6 points
+  - Poor / wrong / no answer: 0-3 points
+- Final score (0-100): (sum of per-question scores / number of questions) × 10, rounded to integer.
+  - Example: 1 question with a great answer → 10/1 × 10 = 100.
+  - Example: 3 questions with scores 10, 7, 4 → (10+7+4)/3 × 10 ≈ 70.
+- If the transcript is empty or has no real Q&A (e.g. only greetings, no question answered), score 0.
+- If the candidate answered at least one question (even briefly), do NOT score 0. Assign points per question and compute the final 0-100 score.
 
-You MUST respond with a single JSON object only, no markdown fences, no extra text.
-Schema:
+Respond with a JSON object only, no other text:
 {
-  "score": <integer 0-100, sum of four dimensions>,
-  "breakdown": {
-    "communication_clarity": <0-25>,
-    "empathy_tone": <0-25>,
-    "problem_handling": <0-25>,
-    "professionalism": <0-25>
-  },
-  "summary": "<2-4 sentences>",
-  "strengths": ["<string>", "..."],
-  "improvements": ["<string>", "..."]
-}
-
-If the candidate never answered (only the interviewer spoke), score MUST be exactly 0 with all breakdown dimensions 0. If the transcript is very short, use a low score and explain in summary.`;
+  "score": <number 0-100>,
+  "summary": "<brief assessment: strengths and areas for improvement in 2-4 sentences>"
+}`;
 
 function extractJsonObject(text) {
   const trimmed = text.trim();
@@ -68,12 +63,7 @@ export async function evaluateInterview(
   if (!hasSubstantiveUserReply(transcriptHistory)) {
     return {
       score: 0,
-      breakdown: {
-        communication_clarity: 0,
-        empathy_tone: 0,
-        problem_handling: 0,
-        professionalism: 0,
-      },
+      breakdown: null,
       summary:
         "No scored responses: the candidate did not answer the interview questions (or replies were too short). Score is 0. Start again and respond when the interviewer asks.",
       strengths: [],
@@ -91,7 +81,7 @@ export async function evaluateInterview(
   const evalSystem = `${CORE_EVAL_SYSTEM}
 
 Interview category: ${cfg.label}
-Category focus areas: ${cfg.evaluationFocus}
+Category focus: ${cfg.evaluationFocus}
 Penalize irrelevant/off-topic answers that are not aligned with this category.`;
 
   const transcriptText =
@@ -141,12 +131,10 @@ Return only the JSON object as specified.`;
     const score = Math.max(0, Math.min(100, Math.round(parsed.score)));
     return {
       score,
-      breakdown: parsed.breakdown || {},
+      breakdown: null,
       summary: String(parsed.summary || ""),
-      strengths: Array.isArray(parsed.strengths) ? parsed.strengths : [],
-      improvements: Array.isArray(parsed.improvements)
-        ? parsed.improvements
-        : [],
+      strengths: [],
+      improvements: [],
     };
   } catch (err) {
     console.error("evaluateInterview:", err);
