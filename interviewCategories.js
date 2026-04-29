@@ -71,6 +71,96 @@ Reply briefly; include at most one clear question or one short scenario plus one
     evaluationFocus:
       "diagnostic thinking, technical correctness, safety, repair planning, and clear customer explanation",
   },
+  housekeeping: {
+    label: "Housekeeping",
+    moduleLabel: "housekeeping operations training module",
+    knowledgeContext: `Training focus for this module:
+- Room and common-area cleaning standards, sequencing, and checklists.
+- Hygiene, sanitization, and safe chemical usage.
+- Time management across multiple tasks and shift priorities.
+- Guest interaction basics, privacy, and professionalism.
+- Reporting damages, lost-and-found handling, and escalation discipline.`,
+    turnPromptBuilder: (userText) => `The candidate just said:
+"${userText}"
+
+Continue as Priya. Stay within housekeeping interview context (cleaning SOPs, hygiene, guest handling, reporting).
+${MID_INTERVIEW_GREETING_RULE}
+Reply briefly; include at most one clear question or one short scenario plus one question.`,
+    evaluationFocus:
+      "cleaning process discipline, hygiene/safety compliance, attention to detail, time management, and guest-facing professionalism",
+  },
+  "social-media-manager": {
+    label: "Social Media Manager",
+    moduleLabel: "social media management training module",
+    knowledgeContext: `Training focus for this module:
+- Content planning, audience targeting, and campaign goal alignment.
+- Platform-specific communication and brand voice consistency.
+- Engagement handling: comments, DMs, and basic community moderation.
+- Metrics understanding: reach, CTR, engagement rate, conversions.
+- Escalation during negative feedback/crisis and reporting outcomes.`,
+    turnPromptBuilder: (userText) => `The candidate just said:
+"${userText}"
+
+Continue as Priya. Stay within social media manager interview context (content strategy, engagement, analytics, crisis response).
+${MID_INTERVIEW_GREETING_RULE}
+Reply briefly; include at most one clear question or one short scenario plus one question.`,
+    evaluationFocus:
+      "content strategy thinking, communication clarity, analytics awareness, stakeholder judgment, and brand-safe community handling",
+  },
+  "car-driver": {
+    label: "Car Driver",
+    moduleLabel: "car driving and passenger service training module",
+    knowledgeContext: `Training focus for this module:
+- Safe driving habits, traffic-rule compliance, and defensive driving.
+- Route planning, punctuality, and handling delays professionally.
+- Vehicle checks before trips (fuel, tyres, lights, documents).
+- Passenger comfort, polite communication, and conflict de-escalation.
+- Incident handling: breakdowns, minor accidents, and emergency escalation.`,
+    turnPromptBuilder: (userText) => `The candidate just said:
+"${userText}"
+
+Continue as Priya. Stay within car driver interview context (safety, routing, vehicle readiness, passenger handling).
+${MID_INTERVIEW_GREETING_RULE}
+Reply briefly; include at most one clear question or one short scenario plus one question.`,
+    evaluationFocus:
+      "driving safety mindset, rule compliance, situational judgment, communication with passengers, and reliability under pressure",
+  },
+  "semiconductor-manufacturing": {
+    label: "Semiconductor Manufacturing",
+    moduleLabel: "semiconductor manufacturing operator training module",
+    knowledgeContext: `Training focus for this module:
+- Cleanroom discipline, contamination control, gowning, and ESD safety.
+- SOP adherence in wafer handling, equipment operation, and handoffs.
+- Shift documentation, lot tracking, and traceability basics.
+- Identifying abnormal machine/process signals and escalation workflow.
+- Quality mindset: defect prevention, rework awareness, and yield sensitivity.`,
+    turnPromptBuilder: (userText) => `The candidate just said:
+"${userText}"
+
+Continue as Priya. Stay within semiconductor manufacturing operator interview context (cleanroom, SOP, quality, escalation).
+${MID_INTERVIEW_GREETING_RULE}
+Reply briefly; include at most one clear question or one short scenario plus one question.`,
+    evaluationFocus:
+      "cleanroom/safety discipline, SOP compliance, process awareness, quality/defect mindset, and escalation correctness",
+  },
+  "ironing-press-work": {
+    label: "Ironing (Press Work)",
+    moduleLabel: "ironing and press-work operations training module",
+    knowledgeContext: `Training focus for this module:
+- Fabric-wise temperature control and steam/press settings.
+- Garment preparation, crease standards, and finishing quality checks.
+- Workstation safety: heat handling, burn prevention, and equipment upkeep.
+- Productivity with consistency: batching, prioritization, and turnaround time.
+- Customer handover quality and handling rework/complaints politely.`,
+    turnPromptBuilder: (userText) => `The candidate just said:
+"${userText}"
+
+Continue as Priya. Stay within ironing/press-work interview context (fabric care, finishing quality, safety, rework handling).
+${MID_INTERVIEW_GREETING_RULE}
+Reply briefly; include at most one clear question or one short scenario plus one question.`,
+    evaluationFocus:
+      "fabric-handling correctness, finishing quality standards, safety practices, throughput-quality balance, and customer service behavior",
+  },
 };
 
 export const DEFAULT_INTERVIEW_CATEGORY = "call-center";
