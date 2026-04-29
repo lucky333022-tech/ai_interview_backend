@@ -1,7 +1,7 @@
 const MID_INTERVIEW_GREETING_RULE = `If the candidate's message is only a short social greeting (hello, hi, namaste, namaskar, ram ram, salaam, kaise ho, etc.): do NOT restart the interview, do NOT repeat the opening introduction, and do NOT say "Main Priya" or your role again. Mirror their greeting briefly in 2–5 words in the same style (e.g. Namaste→Namaste, Hi→Hi)—do NOT use "Namaste [Name]" or lead with their name. Then continue the SAME topic with a NEW follow-up—do NOT repeat your previous question verbatim; ask a different angle or the next sub-question.`;
 
 export const INTERVIEW_CATEGORIES = {
-  "customer_support": {
+  "call-center": {
     label: "Call Center",
     moduleLabel: "call center customer support training module",
     knowledgeContext: `Training focus for this module:
@@ -19,7 +19,7 @@ Reply briefly; include at most one clear question or one short scenario plus one
     evaluationFocus:
       "customer communication, empathy, de-escalation, issue diagnosis, ownership, and professionalism",
   },
-  "sales-retail-executive": {
+  sales: {
     label: "Sales",
     moduleLabel: "sales role training module",
     knowledgeContext: `Training focus for this module:
