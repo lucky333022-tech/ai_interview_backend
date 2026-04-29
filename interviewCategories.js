@@ -19,7 +19,7 @@ Reply briefly; include at most one clear question or one short scenario plus one
     evaluationFocus:
       "customer communication, empathy, de-escalation, issue diagnosis, ownership, and professionalism",
   },
-  sales: {
+  "sales-retail-executive": {
     label: "Sales",
     moduleLabel: "sales role training module",
     knowledgeContext: `Training focus for this module:
